@@ -19,6 +19,7 @@ const ALLOWED_PATHS = [
 ];
 const APPENDABLE = new Set(["videos", "similar", "credits"]);
 const PARAM_RULES: Record<string, (v: string) => boolean> = {
+  language: (v) => /^[a-z]{2}(-[A-Za-z]{2})?$/.test(v),
   page: (v) => /^\d{1,3}$/.test(v) && Number(v) >= 1 && Number(v) <= 500,
   query: (v) => v.length > 0 && v.length <= 100,
   with_genres: (v) => /^[\d,|]{1,60}$/.test(v),
@@ -58,7 +59,7 @@ async function cached<T>(key: string, ttlSec: number, load: () => Promise<T>): P
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 const json = (body: unknown, status = 200, extra: Record<string, string> = {}) =>
@@ -68,7 +69,7 @@ async function handle(req: Request): Promise<Response> {
   const { pathname } = new URL(req.url);
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   if (pathname === "/health") return json({ ok: true });
-  if (pathname !== "/tmdb" || req.method !== "POST") return json({ error: "not found" }, 404);
+  if (pathname !== "/tmdb" || (req.method !== "POST" && req.method !== "GET")) return json({ error: "not found" }, 404);
 
   const ip = req.headers.get("x-real-ip") || req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
   if (!(await allowed(ip))) return json({ error: "too many requests" }, 429, { "Retry-After": "60" });
@@ -76,7 +77,18 @@ async function handle(req: Request): Promise<Response> {
   const token = Bun.env.TMDB_ACCESS_TOKEN;
   if (!token) return json({ error: "TMDB token not configured" }, 500);
 
-  const body: any = await req.json().catch(() => ({}));
+  // The app asks with GET first (cacheable by the CDN, no CORS preflight); POST still works.
+  let body: any;
+  if (req.method === "GET") {
+    const q = new URL(req.url).searchParams;
+    const params: Record<string, string> = {};
+    q.forEach((v, k) => { if (k !== "path") params[k] = v; });
+    body = { path: q.get("path") ?? "", params };
+  } else {
+    body = await req.json().catch(() => ({}));
+  }
+  const cacheHeaders: Record<string, string> =
+    req.method === "GET" ? { "Cache-Control": "public, max-age=60, s-maxage=600, stale-while-revalidate=3600" } : {};
   const cleanPath = String(body?.path ?? "").replace(/^\//, "");
   if (!ALLOWED_PATHS.some((re) => re.test(cleanPath))) return json({ error: "endpoint not permitted" }, 400);
 
@@ -96,7 +108,7 @@ async function handle(req: Request): Promise<Response> {
       if (!r.ok) throw Object.assign(new Error(out.status_message || "TMDB error"), { status: r.status });
       return out;
     });
-    return json({ data, imageBase: IMG_BASE });
+    return json({ data, imageBase: IMG_BASE }, 200, cacheHeaders);
   } catch (err: any) {
     if (err?.status) return json({ error: err.message }, err.status);
     Sentry.captureException(err);
