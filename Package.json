@@ -1,0 +1,12 @@
+{
+  "name": "sarmaxstream-api",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "bun run server.ts"
+  },
+  "dependencies": {
+    "@sentry/bun": "^9.0.0",
+    "ioredis": "^5.4.1"
+  }
+}
